@@ -5,6 +5,7 @@ FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-devel
 # Avoid interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
+ENV HF_HOME=/workspace/models/hf_cache
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -40,17 +41,44 @@ RUN pip install --no-cache-dir \
     ffmpeg-python \
     moviepy
 
-# Download model weights (MuseTalk v1.5)
-RUN mkdir -p models/musetalkV15 && \
-    cd models/musetalkV15 && \
-    wget -q https://huggingface.co/TMElyralab/MuseTalk/resolve/main/musetalkV15/unet.pth -O unet.pth && \
-    wget -q https://huggingface.co/TMElyralab/MuseTalk/resolve/main/musetalkV15/musetalk.json -O musetalk.json
-
-# Download required base models (SD 1.5, VAE, etc.)
-RUN python3 -c "from huggingface_hub import snapshot_download; snapshot_download('runwayml/stable-diffusion-v1-5', cache_dir='/root/.cache/huggingface')"
-RUN python3 -c "from huggingface_hub import snapshot_download; snapshot_download('stabilityai/sd-vae-ft-mse', cache_dir='/root/.cache/huggingface')"
+# Model weights downloaded at runtime to /workspace/models/ for persistence
+# Use download_models.sh on first RunPod startup
 
 # Create inference script
+COPY <<'EOF' /app/download_models.sh
+#!/bin/bash
+# Download MuseTalk model weights to /workspace/models/ (persistent volume)
+# Run once on first startup, models are cached thereafter
+
+MODEL_DIR="/workspace/models"
+HF_BASE="https://huggingface.co/TMElyralab/MuseTalk/resolve/main"
+
+mkdir -p "$MODEL_DIR/musetalkV15"
+
+echo "Checking MuseTalk model weights..."
+if [ ! -f "$MODEL_DIR/musetalkV15/unet.pth" ]; then
+    echo "Downloading MuseTalk v1.5 weights (~1.5GB)..."
+    wget -q --show-progress "$HF_BASE/musetalkV15/unet.pth" -O "$MODEL_DIR/musetalkV15/unet.pth"
+    wget -q "$HF_BASE/musetalkV15/musetalk.json" -O "$MODEL_DIR/musetalkV15/musetalk.json"
+fi
+
+echo "Checking Stable Diffusion 1.5..."
+if [ ! -d "$MODEL_DIR/hf_cache/models--runwayml--stable-diffusion-v1-5" ]; then
+    echo "Downloading Stable Diffusion 1.5 (~4GB)..."
+    HF_HOME="$MODEL_DIR/hf_cache" python3 -c "from huggingface_hub import snapshot_download; snapshot_download('runwayml/stable-diffusion-v1-5')"
+fi
+
+echo "Checking SD VAE..."
+if [ ! -d "$MODEL_DIR/hf_cache/models--stabilityai--sd-vae-ft-mse" ]; then
+    echo "Downloading SD VAE (~350MB)..."
+    HF_HOME="$MODEL_DIR/hf_cache" python3 -c "from huggingface_hub import snapshot_download; snapshot_download('stabilityai/sd-vae-ft-mse')"
+fi
+
+echo "All models ready!"
+EOF
+
+RUN chmod +x /app/download_models.sh
+
 COPY <<'EOF' /app/run_inference.sh
 #!/bin/bash
 # Run MuseTalk inference
@@ -68,8 +96,8 @@ fi
 python3 -m scripts.inference \
     --inference_config ./configs/inference/test.yaml \
     --result_dir ./results/output \
-    --unet_model_path ./models/musetalkV15/unet.pth \
-    --unet_config ./models/musetalkV15/musetalk.json \
+    --unet_model_path /workspace/models/musetalkV15/unet.pth \
+    --unet_config /workspace/models/musetalkV15/musetalk.json \
     --version v15 \
     --audio_path "$AUDIO_PATH" \
     --image_path "$IMAGE_PATH"
@@ -86,6 +114,11 @@ COPY <<'EOF' /app/entrypoint.sh
 #!/bin/bash
 echo "MuseTalk v1.5 Docker - Ready"
 echo "GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo 'No GPU')"
+echo ""
+
+# Auto-download models if not present (first run)
+bash /app/download_models.sh
+
 echo ""
 echo "Usage: bash /app/run_inference.sh <audio.wav> <face.jpg> <output.mp4>"
 exec "$@"
