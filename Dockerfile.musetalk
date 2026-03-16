@@ -1,69 +1,97 @@
-# MuseTalk Docker Image for RunPod
-# Pre-built image with all model weights downloaded
-# Build: docker build -t musetalk:latest .
-# Push: docker push your-registry/musetalk:latest
+# MuseTalk v1.5 Docker Image for RunPod
+# Base: PyTorch 2.1 with CUDA 12.1
+FROM runpod/pytorch:2.1.0-py3.10-cuda12.1.1-devel-ubuntu22.04
 
-FROM nvidia/cuda:11.8.0-runtime-ubuntu22.04
-
+# Avoid interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
-ENV FFMPEG_PATH=/usr/bin/ffmpeg
+ENV PYTHONUNBUFFERED=1
 
-# System dependencies
-RUN apt-get update && apt-get install -y \
-    python3.10 \
-    python3-pip \
-    python3.10-venv \
-    git \
-    wget \
-    curl \
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
-    libgl1-mesa-glx \
-    libglib2.0-0 \
     libsm6 \
     libxext6 \
     libxrender-dev \
+    libgl1-mesa-glx \
+    git \
+    wget \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /workspace/musetalk
-
 # Clone MuseTalk
-RUN git clone https://github.com/TMElyralab/MuseTalk.git . && \
-    git checkout v1.5
+WORKDIR /app
+RUN git clone https://github.com/TMElyralab/MuseTalk.git .
 
-# Python dependencies
-RUN pip3 install --no-cache-dir \
-    torch==2.0.1 \
-    torchvision==0.15.2 \
-    torchaudio==2.0.2 \
-    --index-url https://download.pytorch.org/whl/cu118
+# Install Python dependencies
+RUN pip install --no-cache-dir \
+    diffusers==0.30.2 \
+    accelerate==0.28.0 \
+    numpy==1.23.5 \
+    opencv-python==4.9.0.80 \
+    soundfile==0.12.1 \
+    transformers==4.39.2 \
+    huggingface_hub==0.30.2 \
+    librosa==0.11.0 \
+    einops==0.8.1 \
+    gdown \
+    requests \
+    imageio \
+    imageio-ffmpeg \
+    omegaconf \
+    ffmpeg-python \
+    moviepy
 
-RUN pip3 install --no-cache-dir -r requirements.txt
+# Download model weights (MuseTalk v1.5)
+RUN mkdir -p models/musetalkV15 && \
+    cd models/musetalkV15 && \
+    wget -q https://huggingface.co/TMElyralab/MuseTalk/resolve/main/musetalkV15/unet.pth -O unet.pth && \
+    wget -q https://huggingface.co/TMElyralab/MuseTalk/resolve/main/musetalkV15/musetalk.json -O musetalk.json
 
-# MMLab ecosystem
-RUN pip3 install --no-cache-dir -U openmim && \
-    mim install mmengine && \
-    mim install "mmcv==2.0.1" && \
-    mim install "mmdet==3.1.0" && \
-    mim install "mmpose==1.1.0"
+# Download required base models (SD 1.5, VAE, etc.)
+RUN python3 -c "from huggingface_hub import snapshot_download; snapshot_download('runwayml/stable-diffusion-v1-5', cache_dir='/root/.cache/huggingface')"
+RUN python3 -c "from huggingface_hub import snapshot_download; snapshot_download('stabilityai/sd-vae-ft-mse', cache_dir='/root/.cache/huggingface')"
 
-# Download model weights
-RUN mkdir -p models && \
-    wget -q https://huggingface.co/TMElyralab/MuseTalk/resolve/main/musetalkV15/unet.pth -O models/musetalkV15/unet.pth && \
-    wget -q https://huggingface.co/TMElyralab/MuseTalk/resolve/main/musetalkV15/musetalk.json -O models/musetalkV15/musetalk.json && \
-    wget -q https://huggingface.co/ByteDance/LatentSync/resolve/main/latentsync_syncnet.pt -O models/syncnet/latentsync_syncnet.pt && \
-    wget -q https://huggingface.co/yzd-v/DWPose/resolve/main/dw-ll_ucoco_384.pth -O models/dwpose/dw-ll_ucoco_384.pth && \
-    wget -q https://huggingface.co/stabilityai/sd-vae-ft-mse/resolve/main/config.json -O models/sd-vae/config.json && \
-    wget -q https://huggingface.co/stabilityai/sd-vae-ft-mse/resolve/main/diffusion_pytorch_model.bin -O models/sd-vae/diffusion_pytorch_model.bin && \
-    wget -q https://huggingface.co/openai/whisper-tiny/resolve/main/config.json -O models/whisper/config.json && \
-    wget -q https://huggingface.co/openai/whisper-tiny/resolve/main/pytorch_model.bin -O models/whisper/pytorch_model.bin && \
-    wget -q https://huggingface.co/openai/whisper-tiny/resolve/main/preprocessor_config.json -O models/whisper/preprocessor_config.json
+# Create inference script
+COPY <<'EOF' /app/run_inference.sh
+#!/bin/bash
+# Run MuseTalk inference
+# Usage: bash run_inference.sh <audio_path> <image_path> <output_path>
 
-# Face parsing weights (these need special handling - from Google Drive)
-# You may need to download these manually and COPY them in
-# RUN wget -q ... -O models/face-parse-bisent/79999_iter.pth
-# RUN wget -q https://download.pytorch.org/models/resnet18-5c106cde.pth -O models/face-parse-bisent/resnet18-5c106cde.pth
+AUDIO_PATH="${1}"
+IMAGE_PATH="${2}"
+OUTPUT_PATH="${3:-/app/output/result.mp4}"
 
-# Create directories
-RUN mkdir -p /workspace/musetalk/results /workspace/musetalk/configs/inference
+if [ -z "$AUDIO_PATH" ] || [ -z "$IMAGE_PATH" ]; then
+    echo "Usage: bash run_inference.sh <audio_path> <image_path> [output_path]"
+    exit 1
+fi
 
-CMD ["/bin/bash", "-c", "sleep infinity"]
+python3 -m scripts.inference \
+    --inference_config ./configs/inference/test.yaml \
+    --result_dir ./results/output \
+    --unet_model_path ./models/musetalkV15/unet.pth \
+    --unet_config ./models/musetalkV15/musetalk.json \
+    --version v15 \
+    --audio_path "$AUDIO_PATH" \
+    --image_path "$IMAGE_PATH"
+
+# Copy result to output path
+cp ./results/output/*.mp4 "$OUTPUT_PATH" 2>/dev/null || cp ./results/output/result.mp4 "$OUTPUT_PATH"
+echo "Output saved to: $OUTPUT_PATH"
+EOF
+
+RUN chmod +x /app/run_inference.sh
+
+# Create entrypoint for RunPod
+COPY <<'EOF' /app/entrypoint.sh
+#!/bin/bash
+echo "MuseTalk v1.5 Docker - Ready"
+echo "GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo 'No GPU')"
+echo ""
+echo "Usage: bash /app/run_inference.sh <audio.wav> <face.jpg> <output.mp4>"
+exec "$@"
+EOF
+
+RUN chmod +x /app/entrypoint.sh
+
+ENTRYPOINT ["/app/entrypoint.sh"]
+CMD ["bash"]
