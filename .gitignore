@@ -1,0 +1,36 @@
+# Environment
+.env
+.env.local
+
+# Output
+output/
+audio/
+*.mp4
+*.wav
+*.mp3
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+
+# Logs
+pipeline.log
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# SSH keys (if any)
+*.pem
+id_rsa*
