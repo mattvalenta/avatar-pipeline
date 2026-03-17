@@ -39,92 +39,25 @@ RUN pip install --no-cache-dir \
     imageio-ffmpeg \
     omegaconf \
     ffmpeg-python \
-    moviepy
+    moviepy \
+    mmpose \
+    mmengine \
+    mmcv
 
-# Model weights downloaded at runtime to /workspace/models/ for persistence
-# Use download_models.sh on first RunPod startup
+# Copy scripts
+COPY download_models.sh /app/download_models.sh
+COPY run_inference.sh /app/run_inference.sh
+COPY entrypoint.sh /app/entrypoint.sh
 
-# Create inference script
-COPY <<'EOF' /app/download_models.sh
-#!/bin/bash
-# Download MuseTalk model weights to /workspace/models/ (persistent volume)
-# Run once on first startup, models are cached thereafter
+RUN chmod +x /app/download_models.sh /app/run_inference.sh /app/entrypoint.sh
 
-MODEL_DIR="/workspace/models"
-HF_BASE="https://huggingface.co/TMElyralab/MuseTalk/resolve/main"
+# Model weights are downloaded at runtime to /workspace/models/ for persistence
 
-mkdir -p "$MODEL_DIR/musetalkV15"
+# Expose port for potential API/web interface
+EXPOSE 8080
 
-echo "Checking MuseTalk model weights..."
-if [ ! -f "$MODEL_DIR/musetalkV15/unet.pth" ]; then
-    echo "Downloading MuseTalk v1.5 weights (~1.5GB)..."
-    wget -q --show-progress "$HF_BASE/musetalkV15/unet.pth" -O "$MODEL_DIR/musetalkV15/unet.pth"
-    wget -q "$HF_BASE/musetalkV15/musetalk.json" -O "$MODEL_DIR/musetalkV15/musetalk.json"
-fi
+# Set working directory
+WORKDIR /app
 
-echo "Checking Stable Diffusion 1.5..."
-if [ ! -d "$MODEL_DIR/hf_cache/models--runwayml--stable-diffusion-v1-5" ]; then
-    echo "Downloading Stable Diffusion 1.5 (~4GB)..."
-    HF_HOME="$MODEL_DIR/hf_cache" python3 -c "from huggingface_hub import snapshot_download; snapshot_download('runwayml/stable-diffusion-v1-5')"
-fi
-
-echo "Checking SD VAE..."
-if [ ! -d "$MODEL_DIR/hf_cache/models--stabilityai--sd-vae-ft-mse" ]; then
-    echo "Downloading SD VAE (~350MB)..."
-    HF_HOME="$MODEL_DIR/hf_cache" python3 -c "from huggingface_hub import snapshot_download; snapshot_download('stabilityai/sd-vae-ft-mse')"
-fi
-
-echo "All models ready!"
-EOF
-
-RUN chmod +x /app/download_models.sh
-
-COPY <<'EOF' /app/run_inference.sh
-#!/bin/bash
-# Run MuseTalk inference
-# Usage: bash run_inference.sh <audio_path> <image_path> <output_path>
-
-AUDIO_PATH="${1}"
-IMAGE_PATH="${2}"
-OUTPUT_PATH="${3:-/app/output/result.mp4}"
-
-if [ -z "$AUDIO_PATH" ] || [ -z "$IMAGE_PATH" ]; then
-    echo "Usage: bash run_inference.sh <audio_path> <image_path> [output_path]"
-    exit 1
-fi
-
-python3 -m scripts.inference \
-    --inference_config ./configs/inference/test.yaml \
-    --result_dir ./results/output \
-    --unet_model_path /workspace/models/musetalkV15/unet.pth \
-    --unet_config /workspace/models/musetalkV15/musetalk.json \
-    --version v15 \
-    --audio_path "$AUDIO_PATH" \
-    --image_path "$IMAGE_PATH"
-
-# Copy result to output path
-cp ./results/output/*.mp4 "$OUTPUT_PATH" 2>/dev/null || cp ./results/output/result.mp4 "$OUTPUT_PATH"
-echo "Output saved to: $OUTPUT_PATH"
-EOF
-
-RUN chmod +x /app/run_inference.sh
-
-# Create entrypoint for RunPod
-COPY <<'EOF' /app/entrypoint.sh
-#!/bin/bash
-echo "MuseTalk v1.5 Docker - Ready"
-echo "GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo 'No GPU')"
-echo ""
-
-# Auto-download models if not present (first run)
-bash /app/download_models.sh
-
-echo ""
-echo "Usage: bash /app/run_inference.sh <audio.wav> <face.jpg> <output.mp4>"
-exec "$@"
-EOF
-
-RUN chmod +x /app/entrypoint.sh
-
+# Entrypoint: download models on first run, then keep container alive
 ENTRYPOINT ["/app/entrypoint.sh"]
-CMD ["bash"]
