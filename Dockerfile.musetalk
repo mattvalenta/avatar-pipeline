@@ -49,6 +49,7 @@ RUN pip install --no-cache-dir \
 COPY download_models.sh /app/download_models.sh
 COPY run_inference.sh /app/run_inference.sh
 COPY entrypoint.sh /app/entrypoint.sh
+COPY entrypoint_new.sh /app/entrypoint_new.sh
 COPY cmdserver.py /app/cmdserver.py
 
 RUN chmod +x /app/download_models.sh /app/run_inference.sh /app/entrypoint.sh /app/cmdserver.py
