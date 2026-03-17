@@ -51,7 +51,7 @@ COPY run_inference.sh /app/run_inference.sh
 COPY entrypoint.sh /app/entrypoint.sh
 COPY cmdserver.py /app/cmdserver.py
 
-RUN chmod +x /app/download_models.sh /app/run_inference.sh /app/entrypoint.sh /app/cmdserver.sh /app/cmdserver.py
+RUN chmod +x /app/download_models.sh /app/run_inference.sh /app/entrypoint.sh /app/cmdserver.py
 
 # Model weights are downloaded at runtime to /workspace/models/ for persistence
 
